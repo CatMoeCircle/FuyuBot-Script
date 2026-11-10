@@ -35,7 +35,9 @@ jobs:
           - os: ubuntu-24.04-arm
             asset: linux-aarch64
             lib: libfuyubot_script.so
-          - os: macos-14
+          # `macos-14` 已于 2026-11-02 退役（报「不支持配置 macos-14-arm64-us-default」），
+          # 用 `macos-15`；`macos-latest` 也会被解析成退役配置，别用。
+          - os: macos-15
             asset: macos-aarch64
             lib: libfuyubot_script.dylib
     steps:
@@ -63,6 +65,7 @@ jobs:
             "kind": "native",
             "entry": "${{ matrix.lib }}",
             "abi": 6,
+            "platforms": ["windows-x86_64", "windows-aarch64", "linux-x86_64", "linux-aarch64", "macos-aarch64"],
             "provides": ["fuyubot.host.scripts.python", "fuyubot.host.scripts.js"],
             "description": "Python（uv）与 JS/TS（bun）脚本的中间托管插件"
           }
