@@ -3,19 +3,19 @@
 //!
 //! ## 它站在协议链的哪一端
 //!
-//! 宿主侧是 `fuyubot-sdk-script`（或 v2 的中间插件），脚本侧是这里。两边说同一种
+//! 宿主侧是 `fuyubot-script` 插件，脚本侧是这里。两边说同一种
 //! 「一行一个 JSON」的协议，只是**视角镜像**：
 //!
 //! - 脚本 → 宿主（写 stdout）：`ready` / `on` / `invoke` / `emit` / `tool` /
 //!   `middleware` / `log`；
 //! - 宿主 → 脚本（读 stdin）：`event` / `middleware` / 各种回执（按 `tag` 配对）。
 //!
-//! 协议的完整表格见 `fuyubot-sdk-script` 的 crate 文档——**那一份是权威**，这里只做
+//! 协议的完整表格见 `fuyubot-script` 的 README——**那一份是权威**，这里只做
 //! 镜像那半。
 //!
 //! ## 为什么要有这一层
 //!
-//! 现在 `fuyubot_plugin.js` / `fuyubot_plugin.py` 各自**用语言手写**这份协议客户端
+//! 早期 `fuyubot_plugin.js` / `fuyubot_plugin.py` 各自**用语言手写**这份协议客户端
 //! （`tag`/`handle` 配对、`ready` 握手、按订阅号分发）。两份语言实现会漂移。把协议
 //! 沉进这一份 Rust，Python 与 JS 的薄 SDK 就只剩「把回调转成 C 函数指针」这一件事，
 //! 对协议的理解不可能再各说各话。

@@ -1,38 +1,26 @@
 [workspace]
-members = ["crates/*", "examples/rust-echo", "examples/python-weather", "examples/ts-counter"]
-# 裸 `cargo build` 只编 SDK crate；示例要 `-p fuyubot-example-*` 或 `--workspace`。
+members = ["crates/*"]
+# 裸 `cargo build` 只编这三个；没有示例工程了（示例在文档站）。
 default-members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/CatMoeCircle/FuyuBot-SDK"
+repository = "https://github.com/CatMoeCircle/FuyuBot-Script"
 
-# ⚠️ `fuyubot-abi` / `fuyubot-tdlib-sys` **不在这里**：它们是运行时仓库
-# （https://github.com/CatMoeCircle/Fuyu-Bot）的 crate，从 crates.io 拉。
-# 发布顺序：bot 仓库先发这两个 → 本仓库才能发 fuyubot-plugin-api / fuyubot-sdk-script。
+# 本仓库的 crate 全部是**分发资产**（cdylib / rlib），不发布到 crates.io。
+# 唯一的外部依赖是运行时仓库发出的 `fuyubot-abi`。
+# ⚠️ `0.1.3` 起是 ABI 6：VTable 尾部多了 `current_plugin` / `call_service` /
+# `last_error` / `list_services` / `set_config_section`，服务调用改走宿主那条桥。
+# 必须 ≥0.1.3——用 0.1.2（ABI 5）编出来的 dll 会被新宿主的 `AbiMismatch` 拒掉，
+# 反过来 ABI 6 的 dll 也装不进 ABI 5 的宿主。
 [workspace.dependencies]
-# 写 `0.1.0` 是有意的：`^0.1.0` 会拿到最新的 0.1.x，不必每次跟着改。
-# `fuyubot-abi` 的**首次公开版本就是 0.1.0**，里面已经带着 `plugin_manifest` 的
-# 真实版本号（`CARGO_PKG_VERSION`）与 JSON 转义；更早的 `version` 硬编码
-# `"0.0.0"` 只是内部迭代，从未发布过。
-# ⚠️ `0.1.1` 起 VTable 多了 `provide_service_shared`（服务作用域），要用它就得 ≥0.1.1。
-# ⚠️ `0.1.2` 起又多了 `simplify_invoke` / `simplify_invoke_result`（ABI 4 → 5）。
-# 联调本地改动时用 `[patch.crates-io]` 临时指路，**别把 patch 提交进来**（AGENTS #51）。
-fuyubot-abi = "0.1.2"
-fuyubot-tdlib-sys = "0.1.1"
-fuyubot-plugin-api = { path = "crates/fuyubot-plugin-api", version = "0.1.2" }
-fuyubot-sdk-script = { path = "crates/fuyubot-sdk-script", version = "0.1.2" }
-fuyubot-sdk-cli = { path = "crates/fuyubot-sdk-cli", version = "0.1.2" }
-fuyubot-sdk-native = { path = "crates/fuyubot-sdk-native", version = "0.1.2" }
-fuyubot-sdk-host = { path = "crates/fuyubot-sdk-host", version = "0.1.2" }
-
-clap = { version = "4.6.7", features = ["derive"] }
-# 只用来**静态**读动态库的导出符号（`fuyubot-sdk check`）：不加载、不运行。
-object = { version = "0.40.0", default-features = false, features = ["read", "names", "std"] }
+fuyubot-abi = "0.1.3"
+fuyubot-sdk-host = { path = "crates/fuyubot-sdk-host" }
+fuyubot-sdk-native = { path = "crates/fuyubot-sdk-native" }
 serde_json = "1.0.151"
 
 [profile.debug]

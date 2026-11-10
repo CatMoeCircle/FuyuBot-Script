@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fuyubot"
+version = "0.1.2"
+description = "fuyubot 脚本插件的薄 SDK（Python）：on / invoke / run"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "CatMoeCircle" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/CatMoeCircle/FuyuBot-Script"
+Documentation = "https://catmoecircle.github.io/FuyuBot-docs/"
+
+[tool.setuptools]
+py-modules = ["fuyubot"]

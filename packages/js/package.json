@@ -1,0 +1,28 @@
+{
+  "name": "fuyubot",
+  "version": "0.1.2",
+  "description": "fuyubot 脚本插件的薄 SDK（Bun）：on / invoke / run",
+  "type": "module",
+  "main": "fuyubot.ts",
+  "types": "fuyubot.d.ts",
+  "files": [
+    "fuyubot.ts",
+    "fuyubot.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.3.1"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CatMoeCircle/FuyuBot-Script.git"
+  },
+  "homepage": "https://catmoecircle.github.io/FuyuBot-docs/",
+  "keywords": [
+    "fuyubot",
+    "telegram",
+    "plugin",
+    "bun"
+  ]
+}

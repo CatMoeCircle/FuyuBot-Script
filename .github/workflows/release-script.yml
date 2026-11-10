@@ -1,0 +1,107 @@
+# 发布脚本插件宿主：按平台编 `fuyubot-script`，组成 bundle，挂到 Release。
+#
+# 资产名：`fuyubot-script-<OS>-<平台>.zip`，内容 `plugins/fuyubot.script/`（解压到
+# 机器人根目录即可）。薄 SDK 不在这里发——它们由 publish-packages.yml 发 PyPI / npm。
+name: release script plugin
+
+on:
+  push:
+    tags: ['script-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: package ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: windows-x86_64
+            lib: fuyubot_script.dll
+          - os: windows-11-vs2026-arm
+            asset: windows-aarch64
+            lib: fuyubot_script.dll
+          - os: ubuntu-latest
+            asset: linux-x86_64
+            lib: libfuyubot_script.so
+          - os: ubuntu-24.04-arm
+            asset: linux-aarch64
+            lib: libfuyubot_script.so
+          - os: macos-14
+            asset: macos-aarch64
+            lib: libfuyubot_script.dylib
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release -p fuyubot-script
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          asset="fuyubot-script-${{ matrix.asset }}"
+          bundle="dist/plugins/fuyubot.script"
+          mkdir -p "$bundle"
+          cp "target/release/${{ matrix.lib }}" "$bundle/"
+          cat > "$bundle/plugin.json" <<EOF
+          {
+            "schema": 1,
+            "id": "fuyubot.script",
+            "name": "FuyuBot Script Host",
+            "version": "$version",
+            "kind": "native",
+            "entry": "${{ matrix.lib }}",
+            "abi": 6,
+            "provides": ["fuyubot.host.scripts.python", "fuyubot.host.scripts.js"],
+            "description": "Python（uv）与 JS/TS（bun）脚本的中间托管插件"
+          }
+          EOF
+          ( cd dist && zip -q -r -X "$asset.zip" plugins )
+          mv "dist/$asset.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}-zip
+          path: fuyubot-script-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -lh dist/*.zip
+          notes=$(printf '%s\n' \
+            "## 下载" \
+            "" \
+            "解压后把 \`plugins/fuyubot.script/\` 放进机器人的 \`plugins/\` 目录。" \
+            "" \
+            "| 资产 |" \
+            "| --- |" \
+            "$(for z in dist/*.zip; do printf '| `%s` |\n' "$(basename "$z")"; done)")
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/*.zip --title "fuyubot-script $TAG" --notes "$notes" --repo "$GITHUB_REPOSITORY"
+          fi

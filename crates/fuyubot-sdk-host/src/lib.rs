@@ -1,15 +1,15 @@
 //! 中间插件的**宿主侧**共享逻辑。
 //!
-//! `fuyubot-python-host` / `fuyubot-js-host` 都链接这一份，只差语言参数：
+//! `fuyubot-script` 只用这一份实现，按 `Lang` 各建一个实例：
 //! 扫 `plugins/scripts/` 目录 → 探测解释器 → 给每个脚本装依赖 → spawn 一个进程 →
 //! 读写它的 stdio（「一行一个 JSON」协议）→ 用子作用域隔离每个脚本 →
 //! watch 目录增删 → 卸载即回收。
 //!
-//! ## 与 `fuyubot-sdk-script` 的关系
+//! ## 与原生桥的关系
 //!
-//! 桥接逻辑（把脚本 stdout 的 `op` 翻译成 `HostApi` 调用）与
-//! `fuyubot-sdk-script` 的 `Shared::handle_line` 是**同一份协议的两侧**，这里复制并
-//! 改造成「一个中间插件管多个脚本」。两者最终会统一，当前兼容期各留一份。
+//! 桥接逻辑（把脚本 stdout 的 `op` 翻译成 `HostApi` 调用）与 `fuyubot-sdk-native`
+//! 的 `Shared::handle_line` 是**同一份协议的两侧**；这里按「一个插件管多个脚本」
+//! 改造过（多脚本、子作用域、watch）。
 //!
 //! ## 子作用域
 //!
@@ -34,11 +34,11 @@
 //!
 //! ## 托管清单 service
 //!
-//! 每个中间插件把自己管着的脚本暴露成 service `fuyubot.host.scripts.<lang>`
+//! 每门语言把自己管着的脚本暴露成 service `fuyubot.host.scripts.<lang>`
 //! （一个 `list` 方法，返回 `{"lang":…,"scripts":[…]}`）。**按语言分开起名**：
 //! 两个中间插件共用一个名字的话，服务容器的「同名重复注册即报错」会让第二个
 //! 什么都注册不上。宿主侧按前缀枚举 + `HostRuntime::call_service` 查询——
-//! `fuyubot plugin list` 靠它把清单展平到脚本，否则只能看到两个 dll。
+//! `fuyubot plugin list` 靠它把清单展平到脚本，否则只能看到一个 dll。
 //!
 //! 配置里 `"spawn": false` 进入**只发现模式**：不装依赖、不起进程、不 watch，
 //! 只把扫到的脚本报进清单。列清单不该替用户跑 `bun install`，更不该把作者的
@@ -53,11 +53,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use fuyubot_plugin_api::{
-    HostApi, HostExt, LogLevel, ServiceHandle, ServiceMethod, ServiceVTable, Stage, Subscription,
-    parse_payload,
-};
+use fuyubot_abi::{HostApi, LogLevel, ServiceHandle, ServiceMethod, ServiceVTable, Stage};
 use serde_json::{Value, json};
+
+mod ext;
+pub use ext::{HostExt, Subscription, parse_payload};
 
 /// `plugin_start` 最多等脚本报 `ready` 多久。
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -387,7 +387,7 @@ unsafe extern "C" fn api_scripts_list(
     service_string(&host.scripts_json())
 }
 
-// ── 桥接（复制自 fuyubot-sdk-script，改造成多脚本）──────────────────
+// ── 桥接（改造自原生桥，支持多脚本）─────────────────────────────────
 
 /// 一条通往脚本的**可写**通道（抽成 trait 便于测试顶替真实 stdin）。
 trait LineSink: Send + Sync {
@@ -763,14 +763,16 @@ impl Shared {
                     .get("input")
                     .map(Value::to_string)
                     .unwrap_or_else(|| "{}".to_owned());
-                // SAFETY: 宿主返回的 vtable 在插件生命周期内有效。
-                let result = unsafe { call_service(self.host.get_service(name), method, &input) };
-                match result {
-                    Some(text) => {
+                // ABI v6：服务调用走宿主那条桥，不再自己取 `ServiceVTable` 直调。
+                // 宿主在这条路径上认得出真实调用方（被调方的 `current_plugin` 因此拿到
+                // `fuyubot.script`，服务方法里的 `set_config` 也落提供方自己的段）。
+                match self.host.call_service(name, method, &input) {
+                    Ok(text) => {
                         let parsed = serde_json::from_str(&text).unwrap_or(Value::Null);
                         self.reply(tag, "callService", json!({ "result": parsed }));
                     }
-                    None => self.fail(tag, &format!("服务 {name} 没有方法 {method} 或不存在")),
+                    // `HostApi::call_service` 已经把宿主的 `last_error` 拼进错误文本。
+                    Err(e) => self.fail(tag, &format!("callService {name}.{method} 失败: {e}")),
                 }
             }
 
@@ -864,39 +866,6 @@ unsafe fn describe_service(vtable: *const ServiceVTable) -> Value {
         }
     }
     json!({ "name": name, "methods": methods })
-}
-
-/// 调用服务的一个方法。服务或方法不存在时返回 `None`。
-///
-/// # Safety
-/// `vtable` 必须指向活着的服务描述，或为 null。
-unsafe fn call_service(
-    vtable: *const ServiceVTable,
-    method_name: &str,
-    input_json: &str,
-) -> Option<String> {
-    let service = unsafe { vtable.as_ref()? };
-    let method = (0..service.method_count)
-        .map(|index| unsafe { &*service.methods.add(index) })
-        .find(|method| {
-            !method.name.is_null()
-                && unsafe { CStr::from_ptr(method.name) }.to_string_lossy() == method_name
-        })?;
-    let func = method.func?;
-    let Ok(input) = CString::new(input_json) else {
-        return None;
-    };
-    // SAFETY: func 是服务提供方给的函数指针，input 在调用期间存活。
-    let raw = unsafe { func(service.context, input.as_ptr()) };
-    if raw.is_null() {
-        return Some("null".to_owned());
-    }
-    // SAFETY: 服务契约要求返回字符串由提供方持有、调用方读完即弃。
-    Some(
-        unsafe { CStr::from_ptr(raw) }
-            .to_string_lossy()
-            .into_owned(),
-    )
 }
 
 // ── 脚本进程管理 ────────────────────────────────────────────────────
@@ -1233,6 +1202,11 @@ impl ScriptHost {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // 薄 SDK 从 PyPI / npm 装，自己找不到原生桥；把「插件自己」的路径告诉它
+        // ——脚本进程加载同一份 dll，就是设计文档 4.1 的那条路。
+        if let Some(native) = native_lib_for_scripts() {
+            command.env("FUYUBOT_NATIVE_LIB", native);
+        }
         let mut child = command
             .spawn()
             .map_err(|e| format!("起进程 {program} 失败: {e}"))?;
@@ -1518,10 +1492,44 @@ static KEEP_NATIVE_BRIDGE_SYMBOLS: [FnPtr; 9] = [
     FnPtr(fuyubot_sdk_native::fuyubot_bridge_run as *const ()),
 ];
 
+/// 脚本进程要加载的原生桥。
+///
+/// 缺省就是插件自己（`FUYUBOT_NATIVE_LIB` 可覆盖）：按发行布局在
+/// `<exe 同级>/plugins/` 及其一级子目录里找 `fuyubot_script.{dll,so,dylib}`。
+fn native_lib_for_scripts() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("FUYUBOT_NATIVE_LIB") {
+        return Some(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let plugins = exe.parent()?.join("plugins");
+    let names: &[&str] = if cfg!(windows) {
+        &["fuyubot_script.dll"]
+    } else if cfg!(target_os = "macos") {
+        &["libfuyubot_script.dylib"]
+    } else {
+        &["libfuyubot_script.so"]
+    };
+    for name in names {
+        let direct = plugins.join(name);
+        if direct.is_file() {
+            return Some(direct);
+        }
+    }
+    for entry in std::fs::read_dir(&plugins).ok()?.flatten() {
+        for name in names {
+            let candidate = entry.path().join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuyubot_plugin_api::{ABI_VERSION, HostApiVTable};
+    use fuyubot_abi::{ABI_VERSION, HostApiVTable};
 
     /// 造一个干净的临时目录（跑完由测试自己清掉）。
     fn temp_dir(name: &str) -> PathBuf {
@@ -1747,8 +1755,8 @@ mod tests {
         assert!(!spawn_scripts(r#"{"spawn":false}"#));
     }
 
-    /// 清单 service 按语言分开起名：两个中间插件在同一个宿主里，
-    /// 共用一个名字的话第二个会撞「同名重复注册」。
+    /// 清单 service 按语言分开起名：同一个插件注册两个名字，
+    /// 宿主按同一个前缀枚举。
     #[test]
     fn scripts_service_names_are_per_language() {
         let python = scripts_service_name(Lang::Python);
@@ -1764,7 +1772,7 @@ mod tests {
 
     // ── 假宿主：只要 get_service 返回 null（没有内置 scope service）───────
     //
-    // `HostApi::from_raw` 会逐个校验 17 个函数非空（缺一个就是宿主实现不完整），
+    // `HostApi::from_raw` 会逐个校验 27 个函数非空（缺一个就是宿主实现不完整），
     // 所以这里每个都补一个空桩；本测试只走 `new` 里的 get_service 一条路。
 
     unsafe extern "C" fn fake_get_service(
@@ -1778,15 +1786,12 @@ mod tests {
         _h: *mut core::ffi::c_void,
         _e: *const core::ffi::c_char,
         _f: *const core::ffi::c_char,
-        _c: Option<fuyubot_plugin_api::EventCallbackFn>,
+        _c: Option<fuyubot_abi::EventCallbackFn>,
         _u: *mut core::ffi::c_void,
-    ) -> fuyubot_plugin_api::SubscriptionHandle {
-        fuyubot_plugin_api::SubscriptionHandle::INVALID
+    ) -> fuyubot_abi::SubscriptionHandle {
+        fuyubot_abi::SubscriptionHandle::INVALID
     }
-    unsafe extern "C" fn stub_off(
-        _h: *mut core::ffi::c_void,
-        _s: fuyubot_plugin_api::SubscriptionHandle,
-    ) {
+    unsafe extern "C" fn stub_off(_h: *mut core::ffi::c_void, _s: fuyubot_abi::SubscriptionHandle) {
     }
     unsafe extern "C" fn stub_emit(
         _h: *mut core::ffi::c_void,
@@ -1798,17 +1803,17 @@ mod tests {
     unsafe extern "C" fn stub_tool(
         _h: *mut core::ffi::c_void,
         _d: *const core::ffi::c_char,
-        _handler: Option<fuyubot_plugin_api::ToolHandlerFn>,
+        _handler: Option<fuyubot_abi::ToolHandlerFn>,
         _u: *mut core::ffi::c_void,
-    ) -> fuyubot_plugin_api::ToolHandle {
-        fuyubot_plugin_api::ToolHandle::INVALID
+    ) -> fuyubot_abi::ToolHandle {
+        fuyubot_abi::ToolHandle::INVALID
     }
     unsafe extern "C" fn stub_call_tool(
         _h: *mut core::ffi::c_void,
         _n: *const core::ffi::c_char,
         _i: *const core::ffi::c_char,
-    ) -> fuyubot_plugin_api::RequestId {
-        fuyubot_plugin_api::RequestId::INVALID
+    ) -> fuyubot_abi::RequestId {
+        fuyubot_abi::RequestId::INVALID
     }
     unsafe extern "C" fn stub_list_tools(_h: *mut core::ffi::c_void) -> *const core::ffi::c_char {
         core::ptr::null()
@@ -1833,15 +1838,15 @@ mod tests {
     unsafe extern "C" fn stub_td(
         _h: *mut core::ffi::c_void,
         _m: *const core::ffi::c_char,
-    ) -> fuyubot_plugin_api::RequestId {
-        fuyubot_plugin_api::RequestId::INVALID
+    ) -> fuyubot_abi::RequestId {
+        fuyubot_abi::RequestId::INVALID
     }
     unsafe extern "C" fn stub_td2(
         _h: *mut core::ffi::c_void,
         _n: *const core::ffi::c_char,
         _p: *const core::ffi::c_char,
-    ) -> fuyubot_plugin_api::RequestId {
-        fuyubot_plugin_api::RequestId::INVALID
+    ) -> fuyubot_abi::RequestId {
+        fuyubot_abi::RequestId::INVALID
     }
     unsafe extern "C" fn stub_execute(
         _h: *mut core::ffi::c_void,
@@ -1852,23 +1857,19 @@ mod tests {
     unsafe extern "C" fn stub_middleware(
         _h: *mut core::ffi::c_void,
         _s: u32,
-        _c: Option<fuyubot_plugin_api::MiddlewareCallbackFn>,
+        _c: Option<fuyubot_abi::MiddlewareCallbackFn>,
         _u: *mut core::ffi::c_void,
-    ) -> fuyubot_plugin_api::MiddlewareHandle {
-        fuyubot_plugin_api::MiddlewareHandle::INVALID
+    ) -> fuyubot_abi::MiddlewareHandle {
+        fuyubot_abi::MiddlewareHandle::INVALID
     }
     unsafe extern "C" fn stub_wait(
         _h: *mut core::ffi::c_void,
         _f: *const core::ffi::c_char,
         _t: u64,
-    ) -> fuyubot_plugin_api::WaitHandle {
-        fuyubot_plugin_api::WaitHandle::INVALID
+    ) -> fuyubot_abi::WaitHandle {
+        fuyubot_abi::WaitHandle::INVALID
     }
-    unsafe extern "C" fn stub_cancel(
-        _h: *mut core::ffi::c_void,
-        _w: fuyubot_plugin_api::WaitHandle,
-    ) {
-    }
+    unsafe extern "C" fn stub_cancel(_h: *mut core::ffi::c_void, _w: fuyubot_abi::WaitHandle) {}
     unsafe extern "C" fn stub_log(
         _h: *mut core::ffi::c_void,
         _l: u32,
@@ -1892,14 +1893,56 @@ mod tests {
     unsafe extern "C" fn stub_simplify(
         _h: *mut core::ffi::c_void,
         _o: *const core::ffi::c_char,
-    ) -> fuyubot_plugin_api::RequestId {
-        fuyubot_plugin_api::RequestId::INVALID
+    ) -> fuyubot_abi::RequestId {
+        fuyubot_abi::RequestId::INVALID
     }
     unsafe extern "C" fn stub_simplify_result(
         _h: *mut core::ffi::c_void,
         _o: *const core::ffi::c_char,
     ) -> *const core::ffi::c_char {
         core::ptr::null()
+    }
+    // ABI v6 的五个尾部字段。`fake_call_service` 有意分成两条路：一个真能返回结果的
+    // 服务（验桥通）和一个必定失败的服务（验 `last_error` 被拼进错误文本）。
+    unsafe extern "C" fn stub_current_plugin(
+        _h: *mut core::ffi::c_void,
+    ) -> *const core::ffi::c_char {
+        core::ptr::null()
+    }
+    unsafe extern "C" fn fake_call_service(
+        _h: *mut core::ffi::c_void,
+        service: *const core::ffi::c_char,
+        method: *const core::ffi::c_char,
+        _input: *const core::ffi::c_char,
+    ) -> *const core::ffi::c_char {
+        // SAFETY: 宿主按契约传的是临时 NUL 结尾字符串。
+        let (service, method) = unsafe {
+            (
+                CStr::from_ptr(service).to_str().unwrap_or(""),
+                CStr::from_ptr(method).to_str().unwrap_or(""),
+            )
+        };
+        if (service, method) == ("demo", "echo") {
+            c"{\"ok\":true}".as_ptr()
+        } else {
+            core::ptr::null()
+        }
+    }
+    unsafe extern "C" fn stub_last_error(_h: *mut core::ffi::c_void) -> *const core::ffi::c_char {
+        c"服务 demo 不存在".as_ptr()
+    }
+    unsafe extern "C" fn stub_list_services(
+        _h: *mut core::ffi::c_void,
+    ) -> *const core::ffi::c_char {
+        core::ptr::null()
+    }
+    unsafe extern "C" fn stub_set_config_section(
+        _h: *mut core::ffi::c_void,
+        _s: *const core::ffi::c_char,
+        _k: *const core::ffi::c_char,
+        _v: *const core::ffi::c_char,
+    ) -> i32 {
+        0
     }
 
     fn fake_api() -> HostApi {
@@ -1931,9 +1974,56 @@ mod tests {
             // ABI 0.1.2（v5）的尾部字段：simplify 下沉到宿主后新增的两个入口。
             simplify_invoke: Some(stub_simplify),
             simplify_invoke_result: Some(stub_simplify_result),
+            // ABI 0.1.3（v6）的尾部字段：服务调用经过宿主 + 三个新入口。
+            current_plugin: Some(stub_current_plugin),
+            call_service: Some(fake_call_service),
+            last_error: Some(stub_last_error),
+            list_services: Some(stub_list_services),
+            set_config_section: Some(stub_set_config_section),
         }));
         // SAFETY: vtable 刚泄漏，活到进程结束。
         unsafe { HostApi::from_raw(vtable) }.expect("假宿主必须能构造")
+    }
+
+    /// 记录脚本方向的输出（真进程那条路要子进程 stdin，这里只要一行文本）。
+    struct RecordingSink {
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl LineSink for RecordingSink {
+        fn write_line(&self, line: &str) {
+            self.lines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(line.to_owned());
+        }
+    }
+
+    /// `callService` 必须走宿主的桥（ABI v6）：成功时原样回结果，失败时把宿主给的
+    /// `last_error` 拼进错误文本——这两条只有真走桥才拿得到。
+    #[test]
+    fn call_service_goes_through_the_host_bridge() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let chat = Arc::new(Chat {
+            sink: Box::new(RecordingSink {
+                lines: Arc::clone(&lines),
+            }),
+        });
+        let shared = Shared::new(fake_api(), chat);
+
+        shared.handle_line(
+            r#"{"op":"callService","tag":1,"name":"demo","method":"echo","input":{"x":1}}"#,
+        );
+        shared.handle_line(r#"{"op":"callService","tag":2,"name":"demo","method":"nope"}"#);
+
+        let lines = lines.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains(r#""ok":true"#), "{}", lines[0]);
+        assert_eq!(
+            serde_json::from_str::<Value>(&lines[1]).expect("错误行也是 JSON")["op"],
+            "error"
+        );
+        assert!(lines[1].contains("服务 demo 不存在"), "{}", lines[1]);
     }
 
     /// 清单 JSON 合并三个来源：跑着的 / 起不来的（带原因）/ 只发现没启动的。

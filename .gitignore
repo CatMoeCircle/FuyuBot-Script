@@ -2,7 +2,7 @@
 target/
 
 # ── 生成的绑定与编译产物 ──────────────────────────────────────────────
-# `fuyubot_plugin.h` 是产物不是源码：`fuyubot-sdk codegen --lang c` 现写一份。
+# `fuyubot_plugin.h` 是产物不是源码：由 fuyubot-abi 的 cbindgen 构建产出。
 fuyubot_plugin.h
 *.obj
 *.o
@@ -20,8 +20,11 @@ fuyubot_plugin.h
 # ── 本机开发缓存（td_api.tl / tdjson）──────────────────────────────────
 .tdlib-cache/
 
-# ── 示例里跑出来的东西 ────────────────────────────────────────────────
-examples/*/target/
+# ── Python / npm 打包产物 ─────────────────────────────────────────────
+packages/python/dist/
+packages/python/build/
+packages/python/*.egg-info/
+node_modules/
 /data/
 
 # ── 编辑器 / 系统垃圾 ─────────────────────────────────────────────────

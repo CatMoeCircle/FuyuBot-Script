@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# 原生桥随插件 dll 分发，不进 crates.io。
+publish = false
 
 # cdylib 给脚本进程加载（ctypes / bun:ffi）；rlib 让单测能在本 crate 里直接调
 # 那些导出函数背后的实现（不用真的 dlopen）。

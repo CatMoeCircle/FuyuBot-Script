@@ -1,6 +1,6 @@
 //! `fuyubot.py`（uv 托管路径）的 asyncio 路径真跑一遍。
 //!
-//! 用 stdin/stdout 扮演 `fuyubot-python-host`，起一个真的 Python 进程跑
+//! 用 stdin/stdout 扮演 `fuyubot-script` 的 Python 侧，起一个真的 Python 进程跑
 //! `fuyubot.run_async`，断言 `invoke_async` / `wait_async` 都能从 await 里拿到值。
 //! 没有 Python 解释器时跳过。
 
@@ -56,7 +56,10 @@ fn native_python_run_async_awaits_request_and_update() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建临时目录");
     std::fs::copy(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/fuyubot.py"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/python/fuyubot.py"
+        ),
         dir.join("fuyubot.py"),
     )
     .expect("拷 fuyubot.py");

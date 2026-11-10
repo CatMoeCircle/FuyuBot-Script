@@ -1,6 +1,6 @@
 //! `fuyubot.ts`（bun 托管路径）的 async 路径真跑一遍。
 //!
-//! 用 stdin/stdout 扮演 `fuyubot-js-host`，起一个真的 bun 进程跑 `runAsync`，
+//! 用 stdin/stdout 扮演 `fuyubot-script` 的 JS 侧，起一个真的 bun 进程跑 `runAsync`，
 //! 断言 `invokeAsync` / `waitAsync` 都能从 await 里返回值。没有 bun 时跳过。
 
 use std::io::{BufRead, BufReader, Write};
@@ -43,7 +43,7 @@ fn native_js_run_async_awaits_request_and_update() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建临时目录");
     std::fs::copy(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/fuyubot.ts"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/js/fuyubot.ts"),
         dir.join("fuyubot.ts"),
     )
     .expect("拷 fuyubot.ts");

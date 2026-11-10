@@ -1,0 +1,20 @@
+[package]
+name = "fuyubot-script"
+description = "脚本插件宿主：一个中间插件同时托管 Python（uv）与 JS/TS（bun）脚本"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# 分发形态是各平台预编译 dll，不进 crates.io。
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+fuyubot-sdk-host.workspace = true
+# 链接原生桥，让 `fuyubot_bridge_*` 一起从本 dll 导出——脚本进程里加载的同一份
+# dll 就靠这几个符号当原生后端（设计文档 4.1「同一份 dll 两个进程各加载一次」）。
+fuyubot-sdk-native.workspace = true
